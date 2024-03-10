@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+'''
+################################################################################
+#                                                                              #
+# download_webpage_decluttered                                                 #
+#                                                                              #
+################################################################################
+#                                                                              #
+# LICENCE INFORMATION                                                          #
+#                                                                              #
+# This program downloads a webpage in a decluttered form.                      #
+#                                                                              #
+# copyright (C) 2024 William Breaden Madden                                    #
+#                                                                              #
+# This software is released under the terms of the GNU General Public License  #
+# version 3 (GPLv3).                                                           #
+#                                                                              #
+# This program is free software: you can redistribute it and/or modify it      #
+# under the terms of the GNU General Public License as published by the Free   #
+# Software Foundation, either version 3 of the License, or (at your option)    #
+# any later version.                                                           #
+#                                                                              #
+# This program is distributed in the hope that it will be useful, but WITHOUT  #
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or        #
+# FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for     #
+# more details.                                                                #
+#                                                                              #
+# For a copy of the GNU General Public License, see                            #
+# <http://www.gnu.org/licenses>.                                               #
+#                                                                              #
+################################################################################
+
+usage:
+    download_webpage_decluttered [options]
+
+options:
+    -h, --help     display help message
+    --URL=PATH     URL of webpage to download
+                   [default: http://mosaic.mcom.com/highres/backgrounder/internet.html]
+    --apply_CSS    apply CSS
+    --CSS=PATH     path to CSS
+                   [default: https://rawgit.com/wdbm/style/master/SS/ATLAS_Briefings.css]
+'''
+
+import base64
+import docopt
+import os
+import re
+import requests
+from urllib.parse import urljoin, urlparse
+import sys
+
+from bs4 import BeautifulSoup
+
+__version__ = "2024-03-10T0454Z"
+
+def main(options=docopt.docopt(__doc__)):
+    URL = options['--URL']
+    apply_CSS = options.get("--apply_CSS", False)
+    CSS       = options["--CSS"]
+    directory_name = sanitize_url(URL)
+
+    try:
+        response = requests.get(URL, headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0'})
+        # Raise an HTTPError if the request returned an unsuccessful status code.
+        response.raise_for_status()
+        print(f"successfully accessed URL, response status code: {response.status_code}")
+    except requests.exceptions.HTTPError as http_err:
+        print(f"HTTP error occurred, response status code: {http_err}")
+        sys.exit(0)
+    except requests.exceptions.ConnectionError as conn_err:
+        print(f"error connecting, response status code: {conn_err}")
+        sys.exit(0)
+    except requests.exceptions.Timeout as timeout_err:
+        print(f"timeout error, response status code: {timeout_err}")
+        sys.exit(0)
+    except requests.exceptions.RequestException as req_err:
+        print(f"error occurred, response status code: {req_err}")
+        sys.exit(0)
+
+    soup = BeautifulSoup(response.content, 'html.parser')
+
+    # Loop through the web page tags and extract and append text and images to a decluttered HTML file.
+    if apply_CSS:
+        print('apply CSS')
+        simple_html = f'<html><head><link rel="stylesheet" href="{CSS}" type="text/css" /></head><body>'
+    else:
+        simple_html = '<html><body>'
+    for tag in soup.find_all(True):
+        if tag.name == 'img':
+            local_filepath = download_image(tag['src'], URL, directory_name)
+            if local_filepath:
+                simple_html += f'<img src="{os.path.basename(local_filepath)}" alt="{tag.get("alt", "")}">'
+        elif tag.name in ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'h7', 'h8', 'h9', 'h10']:
+            content = extract_inner_html(tag)
+            simple_html += f'<{tag.name}>{content}</{tag.name}>'
+    simple_html += '</body></html>'
+
+    # Save the HTML file.
+    if not os.path.exists(directory_name):
+        os.makedirs(directory_name)
+    with open(os.path.join(directory_name, 'index.html'), 'w', encoding='utf-8') as f:
+        f.write(simple_html)
+    print(f'saved decluttered webpage to directory {directory_name}')
+
+def sanitize_url(url):
+    '''
+    Convert a URL into a filename-safe string.
+    '''
+    parsed_url = urlparse(url)
+    url_path = parsed_url.path.strip('/')
+    sanitized = re.sub(r'[^a-zA-Z0-9\-_]', '_', url_path)
+    return sanitized
+
+def extract_inner_html(tag):
+    '''
+    Extract the inner HTML of a tag, converting <br> tags to newlines.
+    '''
+    for br in tag.find_all('br'):
+        br.replace_with('\n')
+    return tag.get_text(separator='\n')
+
+def download_image(img_url, base_url, save_directory):
+    '''
+    Download an image and save it to a specified directory.
+    '''
+    if img_url.startswith('data:image'):
+        # base64-encoded images
+        if ';base64,' in img_url:
+            header, encoded = img_url.split(';base64,')
+            ext = header.split('/')[-1]
+            img_data = base64.b64decode(encoded)
+            filepath = os.path.join(save_directory, f'data_image.{ext}')
+        else:
+            # skip other data:image formats
+            return None
+    else:
+        absolute_img_url = urljoin(base_url, img_url)
+        filepath = os.path.join(save_directory, os.path.basename(absolute_img_url))
+        img_data = requests.get(absolute_img_url).content
+
+    if not os.path.exists(save_directory):
+        os.makedirs(save_directory)
+
+    with open(filepath, 'wb') as img_file:
+        img_file.write(img_data)
+
+    return filepath
+
+if __name__ == "__main__":
+    main()
